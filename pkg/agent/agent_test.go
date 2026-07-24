@@ -24,6 +24,7 @@ func TestRun(t *testing.T) {
 		Renovator:       renovate.NewRunner(commanderMock),
 		RedisClient:     redisMock,
 		MaxProcessCount: 2,
+		OwnerResolver:   fakeResolver{},
 	}
 
 	redisMockList := redisMockList{
@@ -59,6 +60,10 @@ func TestRun(t *testing.T) {
 
 	a.Run(ctx)
 }
+
+type fakeResolver struct{}
+
+func (fakeResolver) Resolve(string) (string, string) { return "", "" }
 
 type redisMockList struct {
 	lock sync.RWMutex

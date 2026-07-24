@@ -10,6 +10,7 @@ import (
 	"github.com/fortnoxab/renovator/pkg/command"
 	localredis "github.com/fortnoxab/renovator/pkg/redis"
 	"github.com/fortnoxab/renovator/pkg/renovate"
+	"github.com/fortnoxab/renovator/pkg/repoowner"
 	"github.com/fortnoxab/renovator/pkg/webserver"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
@@ -20,10 +21,14 @@ import (
 var renovateRuns = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "renovate_runs",
 	Help: "Number of renovate runs",
-}, []string{"result", "repo"})
+}, []string{"result", "repo", "team", "name"})
 
 func init() {
 	prometheus.MustRegister(renovateRuns)
+}
+
+type ownerResolver interface {
+	Resolve(repo string) (team, name string)
 }
 
 type Agent struct {
@@ -31,6 +36,7 @@ type Agent struct {
 	RedisClient     redis.Cmdable
 	MaxProcessCount int
 	Webserver       *webserver.Webserver
+	OwnerResolver   ownerResolver
 }
 
 func NewAgentFromContext(cCtx *cli.Context) (*Agent, error) {
@@ -44,6 +50,7 @@ func NewAgentFromContext(cCtx *cli.Context) (*Agent, error) {
 		RedisClient:     rc,
 		MaxProcessCount: cCtx.Int("max-process-count"),
 		Webserver:       &webserver.Webserver{Port: cCtx.String("port"), EnableMetrics: true},
+		OwnerResolver:   repoowner.NewFromEnv(),
 	}, nil
 }
 
@@ -72,12 +79,13 @@ func (a *Agent) Run(ctx context.Context) {
 					logrus.Infof("running renovate on repo: %s", repo)
 					start := time.Now()
 					err := a.Renovator.RunRenovate(repo)
+					team, name := a.OwnerResolver.Resolve(repo)
 					if err != nil {
-						renovateRuns.WithLabelValues("error", repo).Inc()
+						renovateRuns.WithLabelValues("error", repo, team, name).Inc()
 						logrus.Errorf("error renovating repo: %s err: %s", repo, err)
 						continue
 					}
-					renovateRuns.WithLabelValues("ok", repo).Inc()
+					renovateRuns.WithLabelValues("ok", repo, team, name).Inc()
 					logrus.Infof("finished renovating repo: %s in %s", repo, time.Since(start))
 				}
 			}
