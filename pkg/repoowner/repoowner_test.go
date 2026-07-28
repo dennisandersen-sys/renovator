@@ -6,42 +6,52 @@ import (
 	"testing"
 )
 
-func writeConfig(t *testing.T, baseDir, platform, repo, body string) {
+func writeConfig(t *testing.T, dir, body string) string {
 	t.Helper()
-	dir := filepath.Join(baseDir, "repos", platform, filepath.FromSlash(repo))
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return dir
 }
 
 func TestResolve(t *testing.T) {
 	base := t.TempDir()
-	platform := "bitbucket-server"
-	r := &Resolver{BaseDir: base, Platform: platform}
-
-	writeConfig(t, base, platform, "fnx/currencies", `{"serviceName":"currencies","team":"gonix"}`)
-	writeConfig(t, base, platform, "gl/no-team", `{"serviceName":"cache"}`)
-	writeConfig(t, base, platform, "gl/broken", `{not json`)
 
 	cases := []struct {
 		name       string
-		repo       string
+		cloneDir   string
+		slug       string
 		wantTeam   string
 		wantSvcNam string
 	}{
-		{"full config", "fnx/currencies", "gonix", "currencies"},
-		{"strips options", "fnx/currencies?loglevel=debug", "gonix", "currencies"},
-		{"missing team falls back, keeps serviceName", "gl/no-team", Unknown, "cache"},
-		{"broken json falls back to slug", "gl/broken", Unknown, "gl/broken"},
-		{"missing file falls back to slug", "gl/does-not-exist", Unknown, "gl/does-not-exist"},
+		{
+			"full config",
+			writeConfig(t, filepath.Join(base, "currencies"), `{"serviceName":"currencies","team":"gonix"}`),
+			"fnx/currencies", "gonix", "currencies",
+		},
+		{
+			"missing team falls back, keeps serviceName",
+			writeConfig(t, filepath.Join(base, "no-team"), `{"serviceName":"cache"}`),
+			"gl/no-team", Unknown, "cache",
+		},
+		{
+			"broken json falls back to slug",
+			writeConfig(t, filepath.Join(base, "broken"), `{not json`),
+			"gl/broken", Unknown, "gl/broken",
+		},
+		{
+			"missing clone falls back to slug",
+			filepath.Join(base, "does-not-exist"),
+			"gl/does-not-exist", Unknown, "gl/does-not-exist",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			team, name := r.Resolve(tc.repo)
+			team, name := Resolve(tc.cloneDir, tc.slug)
 			if team != tc.wantTeam {
 				t.Errorf("team = %q, want %q", team, tc.wantTeam)
 			}

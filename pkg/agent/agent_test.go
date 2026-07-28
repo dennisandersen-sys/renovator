@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -20,50 +22,52 @@ func TestRun(t *testing.T) {
 
 	commanderMock := mocks.NewMockCommander(t)
 	redisMock := mocks.NewMockCmdable(t)
+	runner := renovate.NewRunner(commanderMock)
+	runner.BaseDir = t.TempDir()
+	runner.Platform = "bitbucket-server"
 	a := &Agent{
-		Renovator:       renovate.NewRunner(commanderMock),
+		Renovator:       runner,
 		RedisClient:     redisMock,
 		MaxProcessCount: 2,
-		OwnerResolver:   fakeResolver{},
 	}
 
-	redisMockList := redisMockList{
-		list: []string{"project1/repo1", "project1/repo2", "project2/repo1"},
+	repos := []string{"project1/repo1", "project1/repo2", "project2/repo1"}
+	cloneDir := func(repo string) string {
+		return filepath.Join(runner.BaseDir, "repos", runner.Platform, filepath.FromSlash(repo))
 	}
+
+	redisMockList := redisMockList{list: repos}
 
 	redisMockCall := redisMock.On("BLPop", mock.Anything, time.Duration(time.Second*5), "renovator-joblist")
 	redisMockCall.RunFn = func(a mock.Arguments) {
 		redisMockCall.ReturnArguments = mock.Arguments{redisMockList.LPop()}
 	}
 
-	commanderMock.On("RunWithEnv", []string{}, "renovate", "project1/repo1").
-		Run(func(args mock.Arguments) {
-			time.Sleep(200 * time.Millisecond)
-		}).
-		Return(nil).
-		Once()
-	commanderMock.On("RunWithEnv", []string{}, "renovate", "project1/repo2").
-		Run(func(args mock.Arguments) {
-			time.Sleep(200 * time.Millisecond)
-		}).
-		Return(nil).
-		Once()
-	commanderMock.On("RunWithEnv", []string{}, "renovate", "project2/repo1").
-		Run(func(args mock.Arguments) {
-			time.Sleep(200 * time.Millisecond)
-		}).
-		Return(nil).
-		Once()
+	for _, repo := range repos {
+		dir := cloneDir(repo)
+		commanderMock.On("RunWithEnv", []string{}, "renovate", "--persist-repo-data=true", repo).
+			Run(func(mock.Arguments) {
+				if err := os.MkdirAll(dir, 0o750); err != nil { // renovate keeps the clone
+					t.Error(err)
+				}
+				time.Sleep(200 * time.Millisecond)
+			}).
+			Return(nil).
+			Once()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	a.Run(ctx)
+
+	// The agent must remove the clones, or the disk fills up.
+	for _, repo := range repos {
+		if _, err := os.Stat(cloneDir(repo)); !os.IsNotExist(err) {
+			t.Errorf("clone %s was not removed", cloneDir(repo))
+		}
+	}
 }
-
-type fakeResolver struct{}
-
-func (fakeResolver) Resolve(string) (string, string) { return "", "" }
 
 type redisMockList struct {
 	lock sync.RWMutex

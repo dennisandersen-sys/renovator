@@ -27,16 +27,11 @@ func init() {
 	prometheus.MustRegister(renovateRuns)
 }
 
-type ownerResolver interface {
-	Resolve(repo string) (team, name string)
-}
-
 type Agent struct {
 	Renovator       *renovate.Runner
 	RedisClient     redis.Cmdable
 	MaxProcessCount int
 	Webserver       *webserver.Webserver
-	OwnerResolver   ownerResolver
 }
 
 func NewAgentFromContext(cCtx *cli.Context) (*Agent, error) {
@@ -50,8 +45,25 @@ func NewAgentFromContext(cCtx *cli.Context) (*Agent, error) {
 		RedisClient:     rc,
 		MaxProcessCount: cCtx.Int("max-process-count"),
 		Webserver:       &webserver.Webserver{Port: cCtx.String("port"), EnableMetrics: true},
-		OwnerResolver:   repoowner.NewFromEnv(),
 	}, nil
+}
+
+// processRepo is its own func so the clone Cleanup can be deferred per repo.
+func (a *Agent) processRepo(repo string) {
+	logrus.Infof("running renovate on repo: %s", repo)
+	start := time.Now()
+
+	run, err := a.Renovator.RunRenovate(repo)
+	defer run.Cleanup()
+
+	team, name := repoowner.Resolve(run.CloneDir, run.Slug)
+	if err != nil {
+		renovateRuns.WithLabelValues("error", repo, team, name).Inc()
+		logrus.Errorf("error renovating repo: %s err: %s", repo, err)
+		return
+	}
+	renovateRuns.WithLabelValues("ok", repo, team, name).Inc()
+	logrus.Infof("finished renovating repo: %s in %s", repo, time.Since(start))
 }
 
 func (a *Agent) Run(ctx context.Context) {
@@ -76,17 +88,7 @@ func (a *Agent) Run(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case repo := <-reposToProcess:
-					logrus.Infof("running renovate on repo: %s", repo)
-					start := time.Now()
-					err := a.Renovator.RunRenovate(repo)
-					team, name := a.OwnerResolver.Resolve(repo)
-					if err != nil {
-						renovateRuns.WithLabelValues("error", repo, team, name).Inc()
-						logrus.Errorf("error renovating repo: %s err: %s", repo, err)
-						continue
-					}
-					renovateRuns.WithLabelValues("ok", repo, team, name).Inc()
-					logrus.Infof("finished renovating repo: %s in %s", repo, time.Since(start))
+					a.processRepo(repo)
 				}
 			}
 		}()
